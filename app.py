@@ -21,7 +21,7 @@ except Exception as e:
     st.error(f"Erro de conexão/segurança: {e}")
     st.stop()
 
-# 3. Painel Lateral (Filtros Totais)
+# 3. Painel Lateral
 with st.sidebar:
     st.header("⚙️ Centro de Comando")
     cols = df.columns.tolist()
@@ -43,7 +43,7 @@ with st.sidebar:
     h_turno = st.number_input("Turno (H):", value=9)
     h_dec = st.number_input("Horas Decorridas:", value=4)
 
-# 4. Engine de Processamento Filtrado
+# 4. Engine de Processamento
 df_f = df.copy()
 df_f[col_hora] = df_f[col_hora].astype(str)
 
@@ -64,11 +64,7 @@ elif visual == "Bottom 5 Ofensores": df_f = df_f.tail(5)
 # 5. Cálculos com Proteção Anti-Crash
 vol_real = df_f[eixo_y].sum()
 meta_prop = meta_total * h_dec
-
-# Proteção contra divisão por zero
 pace = (vol_real / meta_prop) * 100 if (pd.notnull(meta_prop) and meta_prop > 0) else 0
-
-# Proteção contra tempo de turno zerado
 tempo_restante = h_turno - h_dec
 run_rate = ((meta_total * h_turno) - vol_real) / tempo_restante if tempo_restante > 0 else 0
 
@@ -90,6 +86,8 @@ with ct:
     st.subheader("Matriz de Ofensores")
     st.dataframe(df_f.style.map(lambda v: f'color: {"#00B46E" if v >= meta_indiv else "#EE4D2D"}', subset=[eixo_y]), use_container_width=True, height=450)
 
+# 8. IA (Parênteses fechados corretamente)
 if st.button("Gerar Análise de Liderança"):
     genai.configure(api_key=api_key)
-    st.markdown(
+    resposta = genai.GenerativeModel("gemini-1.5-flash").generate_content(f"Analise: {df_f.to_string()}")
+    st.markdown(resposta.text)
