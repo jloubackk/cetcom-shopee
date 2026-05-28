@@ -133,20 +133,101 @@ def detectar_indice(colunas: list[str], palavras: list[str], padrao: int = 0) ->
     return next((i for i, c in enumerate(colunas) if any(p in c.lower() for p in palavras)), padrao)
 
 
-def filtrar_esteira(df: pd.DataFrame, esteira: str, coluna_esteira: str) -> pd.DataFrame:
-    if esteira == "Visão Global":
-        return df
+def encontrar_indice(colunas: list[str], palavras: list[str]) -> int | None:
+    return next((i for i, c in enumerate(colunas) if any(p in c.lower() for p in palavras)), None)
 
-    # Evita falso positivo: P1 não deve capturar P10.
-    padrao = rf"(?<![A-Z0-9]){re.escape(esteira.upper())}(?![A-Z0-9])"
+
+def mascara_esteira_em_serie(serie: pd.Series, esteira: str, aceitar_numero_puro: bool = False) -> pd.Series:
+    """
+    Filtro tolerante para P1/P2/P4.
+    Captura P1, P 1, P-1, P_1, P01, Esteira 1 e Pista 1, sem capturar P10.
+    Quando a coluna escolhida é explicitamente de esteira, aceita também valor puro 1/2/4.
+    """
+    numero = esteira.upper().replace("P", "").strip()
+    bruto = serie.astype(str).str.upper().str.strip()
+
+    padrao = rf"(?<![A-Z0-9])(?:P|PISTA|ESTEIRA)\s*[-_/]?\s*0*{re.escape(numero)}(?![A-Z0-9])"
+    mascara = bruto.str.contains(padrao, regex=True, na=False)
+
+    if aceitar_numero_puro:
+        normalizado = bruto.str.replace(r"\.0$", "", regex=True)
+        mascara = mascara | normalizado.eq(numero)
+
+    return mascara
+
+
+def filtrar_esteira(df: pd.DataFrame, esteira: str, coluna_esteira: str) -> tuple[pd.DataFrame, dict]:
+    diagnostico = {
+        "esteira": esteira,
+        "coluna_esteira": coluna_esteira,
+        "linhas_antes": len(df),
+        "linhas_coluna_escolhida": None,
+        "linhas_fallback_todas_colunas": None,
+        "fallback_usado": False,
+    }
+
+    if esteira == "Visão Global":
+        diagnostico["linhas_depois"] = len(df)
+        return df, diagnostico
 
     if coluna_esteira != "Buscar em todas as colunas":
-        mascara = df[coluna_esteira].astype(str).str.upper().str.contains(padrao, regex=True, na=False)
-    else:
-        mascara = df.astype(str).apply(
-            lambda linha: linha.str.upper().str.contains(padrao, regex=True, na=False).any(), axis=1
+        mascara_coluna = mascara_esteira_em_serie(df[coluna_esteira], esteira, aceitar_numero_puro=True)
+        diagnostico["linhas_coluna_escolhida"] = int(mascara_coluna.sum())
+        if mascara_coluna.any():
+            resultado = df[mascara_coluna]
+            diagnostico["linhas_depois"] = len(resultado)
+            return resultado, diagnostico
+
+        # Blindagem: se a coluna escolhida não encontrou nada, tenta todas as colunas antes de matar a base.
+        diagnostico["fallback_usado"] = True
+
+    mascara_todas = df.apply(
+        lambda linha: mascara_esteira_em_serie(linha, esteira, aceitar_numero_puro=False).any(),
+        axis=1,
+    )
+    diagnostico["linhas_fallback_todas_colunas"] = int(mascara_todas.sum())
+    resultado = df[mascara_todas]
+    diagnostico["linhas_depois"] = len(resultado)
+    return resultado, diagnostico
+
+
+def painel_diagnostico_filtros(
+    df_original: pd.DataFrame,
+    df_com_volume: pd.DataFrame,
+    df_pos_esteira: pd.DataFrame,
+    df_pos_tempo: pd.DataFrame,
+    eixo_y: str,
+    coluna_hora: str,
+    coluna_esteira: str,
+    diagnostico_esteira: dict,
+):
+    with st.expander("Abrir diagnóstico técnico dos filtros", expanded=True):
+        st.write(
+            {
+                "linhas_base_original": len(df_original),
+                "linhas_com_volume_numerico": len(df_com_volume),
+                "linhas_apos_filtro_esteira": len(df_pos_esteira),
+                "linhas_apos_filtro_tempo": len(df_pos_tempo),
+                "coluna_volume": eixo_y,
+                "coluna_hora": coluna_hora,
+                "coluna_esteira": coluna_esteira,
+                "diagnostico_esteira": diagnostico_esteira,
+            }
         )
-    return df[mascara]
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Amostra da coluna de tempo**")
+            st.dataframe(df_original[[coluna_hora]].drop_duplicates().head(30), use_container_width=True, hide_index=True)
+        with col_b:
+            st.markdown("**Amostra da coluna de esteira selecionada**")
+            if coluna_esteira != "Buscar em todas as colunas":
+                st.dataframe(df_original[[coluna_esteira]].drop_duplicates().head(30), use_container_width=True, hide_index=True)
+            else:
+                st.info("Filtro de esteira configurado para buscar em todas as colunas.")
+
+        st.markdown("**Amostra da base carregada**")
+        st.dataframe(df_original.head(20), use_container_width=True, hide_index=True)
 
 
 # =============================
@@ -210,7 +291,7 @@ with st.sidebar:
     idx_nome = detectar_indice(colunas, ["nome", "operador", "colaborador", "id", "matricula", "matrícula"])
     idx_hora = detectar_indice(colunas, ["hora", "horário", "horario", "data", "time"])
     idx_volume = detectar_indice(colunas_volume, ["volume", "pacote", "qtd", "quantidade", "bip", "total"])
-    idx_esteira = detectar_indice(colunas, ["esteira", "pista", "linha", "posto", "processo", "stage"])
+    idx_esteira_detectado = encontrar_indice(colunas, ["esteira", "pista", "linha", "posto", "processo", "stage"])
 
     eixo_x = st.selectbox("Operador/ID (Eixo X):", colunas, index=idx_nome)
     eixo_y = st.selectbox("Volume (Eixo Y):", colunas_volume, index=min(idx_volume, len(colunas_volume) - 1))
@@ -220,7 +301,8 @@ with st.sidebar:
     coluna_esteira = st.selectbox(
         "Coluna para filtro de Esteira:",
         opcoes_coluna_esteira,
-        index=idx_esteira + 1 if colunas else 0,
+        index=(idx_esteira_detectado + 1) if idx_esteira_detectado is not None else 0,
+        help="Se o filtro P1/P2/P4 zerar a base, deixe em 'Buscar em todas as colunas' ou selecione a coluna real da esteira.",
     )
 
     st.markdown("---")
@@ -283,9 +365,24 @@ df_base["_tempo_chave"] = chave_temporal(df_base[coluna_hora])
 df_base = df_base.dropna(subset=["_volume_num"])
 
 # 5.1 Filtro de esteira
-df_filtrado_linhas = filtrar_esteira(df_base, esteira_filtro, coluna_esteira)
+df_pos_esteira, diagnostico_esteira = filtrar_esteira(df_base, esteira_filtro, coluna_esteira)
+
+if df_pos_esteira.empty:
+    st.error("Nenhum volume encontrado após o filtro de esteira.")
+    painel_diagnostico_filtros(
+        df_original=df,
+        df_com_volume=df_base,
+        df_pos_esteira=df_pos_esteira,
+        df_pos_tempo=df_pos_esteira,
+        eixo_y=eixo_y,
+        coluna_hora=coluna_hora,
+        coluna_esteira=coluna_esteira,
+        diagnostico_esteira=diagnostico_esteira,
+    )
+    st.stop()
 
 # 5.2 Filtro temporal
+df_filtrado_linhas = df_pos_esteira.copy()
 if hora_selecionada != "Visão Completa do Turno" and hora_selecionada in mapa_horas:
     chave_selecionada = mapa_horas[hora_selecionada]
     if modo_tempo == "Hora Isolada (Apenas esta hora)":
@@ -294,7 +391,17 @@ if hora_selecionada != "Visão Completa do Turno" and hora_selecionada in mapa_h
         df_filtrado_linhas = df_filtrado_linhas[df_filtrado_linhas["_tempo_chave"] <= chave_selecionada]
 
 if df_filtrado_linhas.empty:
-    st.warning("Nenhum volume encontrado para o cruzamento destes filtros.")
+    st.error("Nenhum volume encontrado após o filtro temporal.")
+    painel_diagnostico_filtros(
+        df_original=df,
+        df_com_volume=df_base,
+        df_pos_esteira=df_pos_esteira,
+        df_pos_tempo=df_filtrado_linhas,
+        eixo_y=eixo_y,
+        coluna_hora=coluna_hora,
+        coluna_esteira=coluna_esteira,
+        diagnostico_esteira=diagnostico_esteira,
+    )
     st.stop()
 
 # Agregado completo: alimenta os cards e o parecer coletivo.
