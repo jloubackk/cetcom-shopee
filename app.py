@@ -13,7 +13,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 2. Conexão via Secrets (Segurança de Nuvem)
+# 2. Conexão via Secrets
 try:
     df = pd.read_csv(st.secrets["CSV_URL"], on_bad_lines='skip')
     api_key = st.secrets["API_KEY"]
@@ -43,11 +43,10 @@ with st.sidebar:
     h_turno = st.number_input("Turno (H):", value=9)
     h_dec = st.number_input("Horas Decorridas:", value=4)
 
-# 4. Engine de Processamento Filtrado (O "Coração" do Painel)
+# 4. Engine de Processamento Filtrado
 df_f = df.copy()
 df_f[col_hora] = df_f[col_hora].astype(str)
 
-# Aplicação dos Filtros
 if esteira != "Visão Global":
     df_f = df_f[df_f.apply(lambda row: row.astype(str).str.contains(esteira, case=False).any(), axis=1)]
 
@@ -57,25 +56,30 @@ if hora_sel != "Visão Completa":
     else:
         df_f = df_f[df_f[col_hora] <= hora_sel]
 
-# Agrupamento e Ordenação
 df_f = df_f.groupby(eixo_x, as_index=False)[eixo_y].sum().sort_values(by=eixo_y, ascending=False)
 
 if visual == "Top 5 Performers": df_f = df_f.head(5)
 elif visual == "Bottom 5 Ofensores": df_f = df_f.tail(5)
 
-# 5. Cálculos (Agora usando df_f)
+# 5. Cálculos com Proteção Anti-Crash
 vol_real = df_f[eixo_y].sum()
 meta_prop = meta_total * h_dec
-pace = (vol_real / meta_prop) * 100 if meta_prop > 0 else 0
-run_rate = ((meta_total * h_turno) - vol_real) / (h_turno - h_dec) if (h_turno - h_dec) > 0 else 0
 
-# 6. Exibição
+# Proteção contra divisão por zero
+pace = (vol_real / meta_prop) * 100 if (pd.notnull(meta_prop) and meta_prop > 0) else 0
+
+# Proteção contra tempo de turno zerado
+tempo_restante = h_turno - h_dec
+run_rate = ((meta_total * h_turno) - vol_real) / tempo_restante if tempo_restante > 0 else 0
+
+# 6. Exibição KPIs
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Vol. Produzido", f"{vol_real:,.0f}")
 c2.metric("Meta Proporcional", f"{meta_prop:,.0f}")
 c3.metric("Pace da Esteira", f"{pace:.1f}%")
 c4.metric("Run Rate p/ Salvar", f"{run_rate:,.0f} unid/h")
 
+# 7. Gráficos
 cg, ct = st.columns([2, 1])
 with cg:
     fig = go.Figure(go.Bar(x=df_f[eixo_x], y=df_f[eixo_y], marker_color=['#00B46E' if v >= meta_indiv else '#EE4D2D' for v in df_f[eixo_y]], text=df_f[eixo_y]))
@@ -88,4 +92,4 @@ with ct:
 
 if st.button("Gerar Análise de Liderança"):
     genai.configure(api_key=api_key)
-    st.markdown(genai.GenerativeModel("gemini-1.5-flash").generate_content(f"Analise: {df_f.to_string()}").text)
+    st.markdown(
