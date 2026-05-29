@@ -28,15 +28,23 @@ except Exception as e:
     st.error(f"Falha de conexão com a base. Verifique os Secrets no Streamlit Cloud. Erro: {e}")
     st.stop()
 
+# Separação inteligente de colunas (Evita selecionar texto no lugar de número)
+colunas_texto = df.select_dtypes(include=['object', 'string']).columns.tolist()
+colunas_numericas = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
+if not colunas_texto: colunas_texto = df.columns.tolist()
+if not colunas_numericas: colunas_numericas = df.columns.tolist()
+
 # 3. Painel Lateral - Filtros de Precisão
 with st.sidebar:
     st.header("⚙️ Centro de Comando")
-    cols = df.columns.tolist()
     
     st.subheader("1. Eixos Base")
-    eixo_x = st.selectbox("Operador (X):", cols, index=0)
-    eixo_y = st.selectbox("Volume (Y):", cols, index=1)
-    col_hora = st.selectbox("Coluna Hora:", cols, index=2)
+    idx_nome = next((i for i, c in enumerate(colunas_texto) if "nome" in c.lower() or "operador" in c.lower() or "id" in c.lower()), 0)
+    idx_hora = next((i for i, c in enumerate(colunas_texto) if "hora" in c.lower() or "data" in c.lower()), 0)
+    
+    eixo_x = st.selectbox("Operador (X):", colunas_texto, index=idx_nome)
+    eixo_y = st.selectbox("Volume (Y):", colunas_numericas)
+    col_hora = st.selectbox("Coluna Hora:", colunas_texto, index=idx_hora)
     
     st.markdown("---")
     st.subheader("2. Filtros Operacionais")
@@ -62,8 +70,13 @@ with st.sidebar:
     h_turno = st.number_input("Duração Turno (H):", min_value=1, value=9)
     h_dec = st.number_input("Horas Decorridas:", min_value=1, value=4)
 
-# 4. ENGINE DE PROCESSAMENTO (Ordem Rigorosa)
+# 4. ENGINE DE PROCESSAMENTO (Ordem Rigorosa e Blindagem Matemática)
 df_f = df.copy()
+
+# === BLINDAGEM CONTRA O VALUEERROR ===
+# Força a coluna Y a ser numérica. Se vier com texto ou vírgula da planilha, ele limpa e processa.
+df_f[eixo_y] = pd.to_numeric(df_f[eixo_y].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+
 df_f[col_hora] = df_f[col_hora].astype(str)
 df_f[eixo_x] = df_f[eixo_x].astype(str)
 
@@ -92,12 +105,13 @@ if visual == "Top 5 Performers":
 elif visual == "Bottom 5 Ofensores":
     df_f = df_f.tail(5)
 
-# Proteção contra DataFrame Vazio após filtros
+# Proteção contra DataFrame Vazio
 if df_f.empty:
-    st.warning("⚠️ Nenhum dado encontrado para esta combinação de filtros. Reajuste o Centro de Comando.")
+    st.warning("⚠️ Nenhum dado encontrado para esta combinação de filtros.")
     st.stop()
 
 # 5. CÁLCULOS MATEMÁTICOS SEGUROS
+# Graças à blindagem no Passo 4, esta linha NUNCA mais causará ValueError
 vol_real = float(df_f[eixo_y].sum())
 meta_prop = float(meta_total * h_dec)
 
@@ -137,7 +151,7 @@ with ct:
     st.subheader("Matriz Individual")
     st.dataframe(df_f.style.map(lambda v: f'color: {"#00B46E" if v >= meta_grafico else "#EE4D2D"}; font-weight: bold', subset=[eixo_y]), use_container_width=True, height=450)
 
-# 8. IA OPERACIONAL TÁTICA (Sem aspas triplas para não quebrar)
+# 8. IA OPERACIONAL TÁTICA
 st.divider()
 if st.button("Gerar Análise de Liderança", type="primary"):
     with st.spinner("Analisando gargalos táticos..."):
