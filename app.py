@@ -41,7 +41,6 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("2. Filtros Operacionais")
     
-    # NOVO: Filtro por Colaborador
     lista_operadores = ["Todos"] + sorted(df[eixo_x].dropna().unique().astype(str).tolist())
     colaborador_sel = st.multiselect("Filtrar Colaborador(es):", options=lista_operadores, default="Todos")
     
@@ -82,10 +81,9 @@ if hora_sel != "Visão Completa":
     if modo_tempo == "Hora Isolada":
         df_f = df_f[df_f[col_hora] == hora_sel]
     else:
-        # Acumulado: garante que a string de hora seja menor ou igual à selecionada
         df_f = df_f[df_f[col_hora] <= hora_sel]
 
-# D. Agrupamento (Soma os volumes baseados no que restou dos filtros)
+# D. Agrupamento (Soma os volumes baseados no que restou)
 df_f = df_f.groupby(eixo_x, as_index=False)[eixo_y].sum().sort_values(by=eixo_y, ascending=False)
 
 # E. Filtro Top/Bottom
@@ -103,13 +101,11 @@ if df_f.empty:
 vol_real = float(df_f[eixo_y].sum())
 meta_prop = float(meta_total * h_dec)
 
-# Cálculo de Pace com proteção contra divisão por zero
 if meta_prop > 0:
     pace = (vol_real / meta_prop) * 100.0
 else:
     pace = 0.0
 
-# Cálculo de Run Rate
 tempo_restante = float(h_turno - h_dec)
 if tempo_restante > 0:
     run_rate = ((meta_total * h_turno) - vol_real) / tempo_restante
@@ -129,7 +125,6 @@ st.divider()
 # 7. GRÁFICOS E TABELAS
 cg, ct = st.columns([2, 1])
 with cg:
-    # Identifica quem bateu a meta para colorir verde, senão vermelho
     meta_grafico = meta_indiv * h_dec if (modo_tempo == "Acumulado" or hora_sel == "Visão Completa") else meta_indiv
     cores = ['#00B46E' if v >= meta_grafico else '#EE4D2D' for v in df_f[eixo_y]]
     
@@ -142,18 +137,28 @@ with ct:
     st.subheader("Matriz Individual")
     st.dataframe(df_f.style.map(lambda v: f'color: {"#00B46E" if v >= meta_grafico else "#EE4D2D"}; font-weight: bold', subset=[eixo_y]), use_container_width=True, height=450)
 
-# 8. IA OPERACIONAL TÁTICA
+# 8. IA OPERACIONAL TÁTICA (Sem aspas triplas para não quebrar)
 st.divider()
 if st.button("Gerar Análise de Liderança", type="primary"):
     with st.spinner("Analisando gargalos táticos..."):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-1.5-flash")
         
-        prompt_tatico = f"""
-        Atue como Diretor de Logística. Esqueça variáveis de código ou software. Foque puramente no resultado operacional do chão de fábrica.
+        prompt_tatico = (
+            "Atue como Diretor de Logística. Esqueça variáveis de código ou software. Foque puramente no resultado operacional do chão de fábrica.\n\n"
+            f"CENÁRIO:\n"
+            f"- Meta Coletiva Esperada: {meta_prop:,.0f}\n"
+            f"- Produção Real: {vol_real:,.0f}\n"
+            f"- Pace: {pace:.1f}%\n"
+            f"- Corte individual: {meta_grafico} unidades.\n\n"
+            f"LISTA DE PRODUÇÃO DOS OPERADORES:\n{df_f.to_string()}\n\n"
+            "Entregue um parecer de impacto em 3 tópicos curtos e agressivos:\n"
+            "1. Diagnóstico do Volume Coletivo (Ganhamos ou perdemos até agora?).\n"
+            "2. Destaques (Quem carrega a operação) e Ofensores (Quem derruba a linha).\n"
+            "3. Ordem de Ação (O que o supervisor deve fazer agora no piso)."
+        )
         
-        CENÁRIO:
-        - Meta Coletiva Esperada: {meta_prop:,.0f}
-        - Produção Real: {vol_real:,.0f}
-        - Pace: {pace:.1f}%
-        - Corte de sobreviv
+        try:
+            st.markdown(model.generate_content(prompt_tatico).text)
+        except Exception as e:
+            st.error(f"Falha de comunicação com a inteligência: {e}")
