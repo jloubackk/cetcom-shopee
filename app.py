@@ -28,7 +28,7 @@ except Exception as e:
     st.error(f"Falha de conexão com a base. Verifique os Secrets no Streamlit Cloud. Erro: {e}")
     st.stop()
 
-# Separação inteligente de colunas (Evita selecionar texto no lugar de número)
+# Separação inteligente de colunas
 colunas_texto = df.select_dtypes(include=['object', 'string']).columns.tolist()
 colunas_numericas = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
 if not colunas_texto: colunas_texto = df.columns.tolist()
@@ -47,12 +47,12 @@ with st.sidebar:
     col_hora = st.selectbox("Coluna Hora:", colunas_texto, index=idx_hora)
     
     st.markdown("---")
-    st.subheader("2. Filtros Operacionais")
+    st.subheader("2. Recortes Operacionais")
     
     lista_operadores = ["Todos"] + sorted(df[eixo_x].dropna().unique().astype(str).tolist())
     colaborador_sel = st.multiselect("Filtrar Colaborador(es):", options=lista_operadores, default="Todos")
     
-    esteira = st.selectbox("Filtrar Esteira:", ["Visão Global", "P1", "P2", "P4"])
+    esteira = st.selectbox("Isolar Esteira:", ["Visão Global", "P1", "P2", "P4"])
     
     lista_horas = ["Visão Completa"] + sorted(df[col_hora].dropna().unique().astype(str).tolist())
     hora_sel = st.selectbox("Referência de Hora:", lista_horas)
@@ -64,56 +64,79 @@ with st.sidebar:
     visual = st.radio("Recorte de Desempenho:", ["Visão Total", "Top 5 Performers", "Bottom 5 Ofensores"])
 
     st.markdown("---")
-    st.subheader("3. Metas e Turno")
-    meta_indiv = st.number_input("Corte SLA Indiv (unid/h):", value=157)
-    meta_total = st.number_input("Meta Coletiva (unid/h):", value=2560)
+    st.subheader("3. SLA Coletivo (Vazão da Esteira/h)")
+    meta_total_p1 = st.number_input("Carga Horária P1:", value=2560, step=50)
+    meta_total_p2 = st.number_input("Carga Horária P2:", value=2560, step=50)
+    meta_total_p4 = st.number_input("Carga Horária P4:", value=1760, step=50)
+    meta_total_global = st.number_input("Carga Horária Global:", value=6880, step=100)
+
+    st.markdown("---")
+    st.subheader("4. SLA Individual (Linha de Corte/h)")
+    meta_p1 = st.number_input("Meta Individual P1:", value=157, step=5)
+    meta_p2 = st.number_input("Meta Individual P2:", value=157, step=5)
+    meta_p4 = st.number_input("Meta Individual P4:", value=157, step=5)
+    meta_global = st.number_input("Meta Individual Global:", value=157, step=5)
+    
+    st.markdown("---")
+    st.subheader("5. Controle de Turno")
     h_turno = st.number_input("Duração Turno (H):", min_value=1, value=9)
     h_dec = st.number_input("Horas Decorridas:", min_value=1, value=4)
 
-# 4. ENGINE DE PROCESSAMENTO (Ordem Rigorosa e Blindagem Matemática)
+# 4. ENGINE DE PROCESSAMENTO E BLINDAGEM MATEMÁTICA
 df_f = df.copy()
 
-# === BLINDAGEM CONTRA O VALUEERROR ===
-# Força a coluna Y a ser numérica. Se vier com texto ou vírgula da planilha, ele limpa e processa.
+# Força a coluna Y a ser numérica, limpando vírgulas
 df_f[eixo_y] = pd.to_numeric(df_f[eixo_y].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
 df_f[col_hora] = df_f[col_hora].astype(str)
 df_f[eixo_x] = df_f[eixo_x].astype(str)
 
-# A. Filtro de Colaborador
+# A. Colaborador
 if "Todos" not in colaborador_sel and len(colaborador_sel) > 0:
     df_f = df_f[df_f[eixo_x].isin(colaborador_sel)]
 
-# B. Filtro de Esteira
+# B. Esteira
 if esteira != "Visão Global":
     mask = df_f.apply(lambda row: row.astype(str).str.contains(esteira, case=False).any(), axis=1)
     df_f = df_f[mask]
 
-# C. Filtro Temporal
+# C. Temporal
 if hora_sel != "Visão Completa":
     if modo_tempo == "Hora Isolada":
         df_f = df_f[df_f[col_hora] == hora_sel]
     else:
         df_f = df_f[df_f[col_hora] <= hora_sel]
 
-# D. Agrupamento (Soma os volumes baseados no que restou)
+# D. Agrupamento
 df_f = df_f.groupby(eixo_x, as_index=False)[eixo_y].sum().sort_values(by=eixo_y, ascending=False)
 
-# E. Filtro Top/Bottom
+# E. Desempenho
 if visual == "Top 5 Performers":
     df_f = df_f.head(5)
 elif visual == "Bottom 5 Ofensores":
     df_f = df_f.tail(5)
 
-# Proteção contra DataFrame Vazio
 if df_f.empty:
     st.warning("⚠️ Nenhum dado encontrado para esta combinação de filtros.")
     st.stop()
 
-# 5. CÁLCULOS MATEMÁTICOS SEGUROS
-# Graças à blindagem no Passo 4, esta linha NUNCA mais causará ValueError
+# 5. ATRIBUIÇÃO DINÂMICA DE SLA (Restaurada)
+if esteira == "P1":
+    meta_ind_ativa = meta_p1
+    meta_col_ativa = meta_total_p1
+elif esteira == "P2":
+    meta_ind_ativa = meta_p2
+    meta_col_ativa = meta_total_p2
+elif esteira == "P4":
+    meta_ind_ativa = meta_p4
+    meta_col_ativa = meta_total_p4
+else:
+    meta_ind_ativa = meta_global
+    meta_col_ativa = meta_total_global
+
+# 6. CÁLCULOS SEGUROS
 vol_real = float(df_f[eixo_y].sum())
-meta_prop = float(meta_total * h_dec)
+meta_prop = float(meta_col_ativa * h_dec)
 
 if meta_prop > 0:
     pace = (vol_real / meta_prop) * 100.0
@@ -122,11 +145,11 @@ else:
 
 tempo_restante = float(h_turno - h_dec)
 if tempo_restante > 0:
-    run_rate = ((meta_total * h_turno) - vol_real) / tempo_restante
+    run_rate = ((meta_col_ativa * h_turno) - vol_real) / tempo_restante
 else:
     run_rate = 0.0
 
-# 6. RENDERIZAÇÃO DE KPIs
+# 7. RENDERIZAÇÃO DE KPIs
 st.subheader(f"Status Atual: {esteira} | {visual}")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Vol. Produzido", f"{vol_real:,.0f}")
@@ -136,10 +159,11 @@ c4.metric("Run Rate p/ Salvar", f"{run_rate:,.0f} unid/h")
 
 st.divider()
 
-# 7. GRÁFICOS E TABELAS
+# 8. GRÁFICOS E TABELAS
 cg, ct = st.columns([2, 1])
 with cg:
-    meta_grafico = meta_indiv * h_dec if (modo_tempo == "Acumulado" or hora_sel == "Visão Completa") else meta_indiv
+    # Corte dinâmico baseado no modo de tempo e esteira selecionada
+    meta_grafico = meta_ind_ativa * h_dec if (modo_tempo == "Acumulado" or hora_sel == "Visão Completa") else meta_ind_ativa
     cores = ['#00B46E' if v >= meta_grafico else '#EE4D2D' for v in df_f[eixo_y]]
     
     fig = go.Figure(go.Bar(x=df_f[eixo_x], y=df_f[eixo_y], marker_color=cores, text=df_f[eixo_y], textposition='outside'))
@@ -151,7 +175,7 @@ with ct:
     st.subheader("Matriz Individual")
     st.dataframe(df_f.style.map(lambda v: f'color: {"#00B46E" if v >= meta_grafico else "#EE4D2D"}; font-weight: bold', subset=[eixo_y]), use_container_width=True, height=450)
 
-# 8. IA OPERACIONAL TÁTICA
+# 9. IA OPERACIONAL TÁTICA
 st.divider()
 if st.button("Gerar Análise de Liderança", type="primary"):
     with st.spinner("Analisando gargalos táticos..."):
@@ -159,17 +183,17 @@ if st.button("Gerar Análise de Liderança", type="primary"):
         model = genai.GenerativeModel("gemini-1.5-flash")
         
         prompt_tatico = (
-            "Atue como Diretor de Logística. Esqueça variáveis de código ou software. Foque puramente no resultado operacional do chão de fábrica.\n\n"
+            f"Atue como Diretor de Logística. Esqueça variáveis de software. Foque no resultado operacional da esteira {esteira}.\n\n"
             f"CENÁRIO:\n"
-            f"- Meta Coletiva Esperada: {meta_prop:,.0f}\n"
+            f"- Meta Coletiva Proporcional: {meta_prop:,.0f}\n"
             f"- Produção Real: {vol_real:,.0f}\n"
             f"- Pace: {pace:.1f}%\n"
-            f"- Corte individual: {meta_grafico} unidades.\n\n"
-            f"LISTA DE PRODUÇÃO DOS OPERADORES:\n{df_f.to_string()}\n\n"
+            f"- Corte individual na visão atual: {meta_grafico} unidades.\n\n"
+            f"LISTA DE PRODUÇÃO:\n{df_f.to_string()}\n\n"
             "Entregue um parecer de impacto em 3 tópicos curtos e agressivos:\n"
-            "1. Diagnóstico do Volume Coletivo (Ganhamos ou perdemos até agora?).\n"
-            "2. Destaques (Quem carrega a operação) e Ofensores (Quem derruba a linha).\n"
-            "3. Ordem de Ação (O que o supervisor deve fazer agora no piso)."
+            "1. Diagnóstico do Volume Coletivo (Estamos performando?).\n"
+            "2. Destaques e Ofensores (Quem está fora do SLA de 157h e precisa de ação?).\n"
+            "3. Ordem Tática (O que fazer agora no piso)."
         )
         
         try:
